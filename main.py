@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-import google.generativeai as genai
+from groq import Groq
 import os
 
 app = FastAPI()
@@ -13,7 +13,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-genai.configure(api_key=os.environ["GEMINI_API_KEY"])
+client = Groq(api_key=os.environ["GROQ_API_KEY"])
 
 SYSTEM_PROMPT = """You are LexFin AI — a smart, professional assistant specializing in Finance and Law.
 
@@ -24,12 +24,10 @@ Your expertise covers:
 Guidelines:
 - Always be helpful, clear, and concise
 - Use simple language — avoid jargon unless asked
-- Always add a disclaimer for legal/financial advice: "This is general information, not professional legal or financial advice. Please consult a certified expert for your specific situation."
+- Always add a disclaimer: "This is general information, not professional legal or financial advice. Please consult a certified expert for your specific situation."
 - If a question is completely outside finance/law, politely redirect: "I specialize in Finance and Law topics. Could you ask me something in that domain?"
 - Be conversational and warm, not robotic
 """
-
-model = genai.GenerativeModel("gemini-2.0-flash")
 
 sessions: dict[str, list] = {}
 
@@ -47,20 +45,17 @@ def root():
 @app.post("/chat", response_model=ChatResponse)
 def chat(req: ChatRequest):
     history = sessions.get(req.session_id, [])
+    history.append({"role": "user", "content": req.message})
 
-    # Build conversation with system prompt injected as first user/model pair
-    if not history:
-        history = [
-            {"role": "user", "parts": [SYSTEM_PROMPT + "\n\nAcknowledge you're ready."]},
-            {"role": "model", "parts": ["Understood. I'm LexFin AI, ready to help with your Finance and Law questions!"]},
-        ]
+    response = client.chat.completions.create(
+        model="llama-3.3-70b-versatile",
+        messages=[{"role": "system", "content": SYSTEM_PROMPT}] + history,
+        temperature=0.7,
+        max_tokens=1024,
+    )
 
-    chat_session = model.start_chat(history=history)
-    response = chat_session.send_message(req.message)
-    reply = response.text
-
-    history.append({"role": "user", "parts": [req.message]})
-    history.append({"role": "model", "parts": [reply]})
+    reply = response.choices[0].message.content
+    history.append({"role": "assistant", "content": reply})
     sessions[req.session_id] = history
 
     return ChatResponse(reply=reply)
